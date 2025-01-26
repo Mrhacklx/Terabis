@@ -1,121 +1,163 @@
+import json
 import os
-import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from pymongo import MongoClient
-from dotenv import load_dotenv
-import requests
+import aiohttp
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup
+from aiogram.utils import executor
+from aiohttp import web
 
-# Load environment variables
-load_dotenv()
+# File to store user data (API keys)
+user_data_file = "user_data.json"
 
-# MongoDB Setup
-client = MongoClient(os.getenv("MONGO_URI"))
-db = client["telegram_bot_db"]
-users_collection = db["users"]
+# Load user data from file
+if os.path.exists(user_data_file):
+    with open(user_data_file, "r") as file:
+        user_data = json.load(file)
+else:
+    user_data = {}
 
-# Telegram Bot Token
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# Enable logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# Save user data to file
+def save_user_data():
+    with open(user_data_file, "w") as file:
+        json.dump(user_data, file)
 
 # Function to validate API Key
-def validate_api_key(api_key):
+async def validate_api_key(api_key):
     try:
-        test_url = "https://example.com"  # Replace with a valid test URL
+        test_url = "https://example.com"  # Replace with a valid URL for testing
         api_url = f"https://bisgram.com/api?api={api_key}&url={test_url}"
-        response = requests.get(api_url)
-        data = response.json()
-        return data.get("status") == "success"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url) as response:
+                data = await response.json()
+                return data.get("status") == "success"
     except Exception as e:
-        logger.error(f"Error validating API key: {e}")
+        print("Error validating API key:", e)
         return False
 
-# /start command
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    await update.message.reply_text(f"Hi {user.first_name}!\nWelcome to Terabis Bot.\n\nHow to connect: /help")
+# Initialize bot and dispatcher
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", 3000))
 
-# /connect command
-async def connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    message_parts = update.message.text.split(" ")
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(bot)
 
-    if len(message_parts) < 2:
-        await update.message.reply_text("Please provide your API key. Example: /connect YOUR_API_KEY")
+@dp.message_handler(commands=['start'])
+async def start_command(message: types.Message):
+    await message.reply(
+        f"Hi {message.from_user.first_name},\n\nWelcome to the Terabis \n\nHow to connect /help"
+    )
+
+@dp.message_handler(commands=['connect'])
+async def connect_command(message: types.Message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.reply("Please provide your API key. Example: /connect YOUR_API_KEY \n\nFor API ID /help")
         return
 
-    api_key = message_parts[1]
+    api_key = parts[1]
+    user_id = message.from_user.id
 
-    if validate_api_key(api_key):
-        users_collection.update_one(
-            {"telegram_id": user_id},
-            {"$set": {"api_key": api_key}},
-            upsert=True,
-        )
-        await update.message.reply_text("✅ API key connected successfully! You can now shorten links.")
+    if await validate_api_key(api_key):
+        user_data[user_id] = {"apiKey": api_key}
+        save_user_data()
+        await message.reply("✅ API key connected successfully! You can now shorten links.")
     else:
-        await update.message.reply_text("❌ Invalid API key. Please try again.")
+        await message.reply("❌ Invalid API key. Please try again.\n\nHow to connect /help")
 
-# /disconnect command
-async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    result = users_collection.delete_one({"telegram_id": user_id})
+@dp.message_handler(commands=['disconnect'])
+async def disconnect_command(message: types.Message):
+    user_id = message.from_user.id
 
-    if result.deleted_count > 0:
-        await update.message.reply_text("✅ Your API key has been disconnected successfully.")
+    if user_id in user_data:
+        del user_data[user_id]
+        save_user_data()
+        await message.reply("✅ Your API key has been disconnected successfully.")
     else:
-        await update.message.reply_text("⚠️ No API key is connected.")
+        await message.reply("⚠️ You have not connected an API key yet.")
 
-# /view command
-async def view(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user = users_collection.find_one({"telegram_id": user_id})
+@dp.message_handler(commands=['help'])
+async def help_command(message: types.Message):
+    await message.reply(
+        """
+How to Connect:
+1. Go to [Bisgram.com](https://bisgram.com)
+2. Create an Account
+3. Click on the menu bar (top left side)
+4. Click on *Tools > Developer API*
+5. Copy the API token
+6. Use this command: /connect YOUR_API_KEY
+   Example: /connect 8268d7f25na2c690bk25d4k20fbc63p5p09d6906
 
-    if user and "api_key" in user:
-        await update.message.reply_text(f"✅ Your connected API key: `{user['api_key']}`", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("⚠️ No API key is connected. Use /connect to link one.")
-
-# /help command
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "How to Connect:\n"
-        "1. Go to [Bisgram.com](https://bisgram.com)\n"
-        "2. Create an Account\n"
-        "3. Navigate to Tools > Developer API\n"
-        "4. Copy the API token\n"
-        "5. Use the command: /connect YOUR_API_KEY\n"
-        "   Example: /connect 123456789abcdef\n\n"
-        "For assistance, contact [Support Bot](https://t.me/ayushx2026_bot)"
+For any confusion or help, contact [@ayushx2026_bot](https://t.me/ayushx2026_bot)
+        """,
+        parse_mode="MarkdownV2"
     )
-    await update.message.reply_text(help_text, parse_mode="MarkdownV2")
 
-# Fallback for invalid messages
-async def handle_invalid_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⚠️ Please use a valid command. Use /help for assistance.")
+@dp.message_handler(commands=['commands'])
+async def commands_command(message: types.Message):
+    await message.reply(
+        """
+🤖 *Link Shortener Bot Commands:*
+- /connect [API_KEY] - Connect your API key.
+- /disconnect - Disconnect your API key.
+- /view - View your connected API key.
+- /stats - View your link shortening stats.
+- /help - How to connect to website.
+        """,
+        parse_mode="Markdown"
+    )
 
-# Main function to run the bot
-def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+@dp.message_handler(commands=['view'])
+async def view_command(message: types.Message):
+    user_id = message.from_user.id
+    if user_id in user_data and "apiKey" in user_data[user_id]:
+        await message.reply(f"✅ Your connected API key: `{user_data[user_id]['apiKey']}`", parse_mode="Markdown")
+    else:
+        await message.reply("⚠️ No API key is connected. Use /connect to link one.")
 
-    # Register commands
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("connect", connect))
-    application.add_handler(CommandHandler("disconnect", disconnect))
-    application.add_handler(CommandHandler("view", view))
-    application.add_handler(CommandHandler("help", help_command))
+@dp.message_handler(commands=['stats'])
+async def stats_command(message: types.Message):
+    user_id = message.from_user.id
+    link_count = user_data.get(user_id, {}).get("linkCount", 0)
+    await message.reply(f"📊 You have shortened {link_count} links.")
 
-    # Handle invalid messages
-    application.add_handler(MessageHandler(filters.ALL, handle_invalid_messages))
+@dp.message_handler()
+async def handle_message(message: types.Message):
+    user_id = message.from_user.id
 
-    # Run the bot
-    logger.info("Bot started.")
-    application.run_polling()
+    if user_id not in user_data or "apiKey" not in user_data[user_id]:
+        await message.reply("⚠️ You haven't connected your API key yet. Please use /connect [API_KEY] to connect.")
+        return
+
+    api_key = user_data[user_id]["apiKey"]
+    links = [word for word in message.text.split() if word.startswith("http")]
+
+    if not links:
+        await message.reply("Please send a valid link to shorten.")
+        return
+
+    try:
+        for link in links:
+            api_url = f"https://bisgram.com/api?api={api_key}&url={link}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url) as response:
+                    data = await response.json()
+
+                    if data.get("status") == "success":
+                        shortened_link = data.get("shortenedUrl")
+                        await message.reply(f"🔗 Shortened link: {shortened_link}")
+                    else:
+                        await message.reply("❌ Failed to shorten the link.")
+    except Exception as e:
+        print("Error shortening link:", e)
+        await message.reply("❌ An error occurred while processing your link. Please try again.")
+
+# Webhook setup
+app = web.Application()
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
+app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
-    main()
+    executor.start_polling(dp, skip_updates=True)
