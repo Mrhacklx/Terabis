@@ -1,20 +1,17 @@
-# Use official Python runtime as a base image
+# Use an official Python runtime as a parent image
 FROM python:3.10-slim
 
-# Set the working directory in the container
+# Set the working directory
 WORKDIR /app
 
-# Copy requirements.txt into the container
-COPY requirements.txt .
+# Copy the current directory contents into the container at /app
+COPY . /app
 
-# Install Python dependencies
+# Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the bot code into the container
-COPY . .
+# Expose the port for Koyeb to access
+EXPOSE 3000
 
-# Expose the default port for Koyeb (not strictly necessary for a Telegram bot)
-EXPOSE 8080
-
-# Run the bot
-CMD ["python", "main.py"]
+# Command to run your bot
+CMD ["python", "bot.py"]
