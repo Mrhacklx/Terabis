@@ -1,2 +1,6 @@
 aiogram==2.25.1
 aiohttp==3.8.5
+Babel==2.9.1
+certifi>=2021.10.8
+magic-filter>=1.0.9
+# Add more dependencies as needed
